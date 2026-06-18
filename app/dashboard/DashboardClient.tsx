@@ -1,23 +1,12 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
-import {
-  AlertCircle,
-  ArrowRight,
-  BookOpen,
-  FileJson,
-  PauseCircle,
-  PlayCircle,
-  Radio,
-  Trash2,
-  Upload,
-} from "lucide-react";
+import { useState, useCallback, useEffect, useMemo } from "react";
 import { SearchBar } from "@/components/dashboard/SearchBar";
 import { EventFeedTable } from "@/components/dashboard/EventFeedTable";
 import { AnalyticsSummaryCards } from "@/components/dashboard/AnalyticsSummaryCards";
 import { UploadAbiDialog } from "@/components/dashboard/UploadAbiDialog";
+import { ExportDataDialog } from "@/components/dashboard/ExportDataDialog";
 import { Button } from "@/components/ui/button";
-import { translateEvents } from "@/lib/translator/registry";
 import {
   buildCustomBlueprints,
   loadCustomAbis,
@@ -26,7 +15,8 @@ import {
 } from "@/lib/translator/custom-abi";
 import { getMockEventsForContract, MOCK_RAW_EVENTS } from "@/lib/mock-data";
 import { useLiveFeed } from "@/lib/hooks/useLiveFeed";
-import type { CustomAbi, RawEvent, TranslatedEvent } from "@/lib/translator/types";
+import { useEventTranslator } from "@/lib/hooks/useEventTranslator";
+import type { RawEvent, TranslatedEvent, CustomAbi } from "@/lib/translator/types";
 
 /** Simulates a network delay for realistic UX. */
 function simulateNetworkDelay(ms: number): Promise<void> {
@@ -42,7 +32,6 @@ export function DashboardClient(): React.JSX.Element {
   const [searchedContract, setSearchedContract] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [isUploadOpen, setIsUploadOpen] = useState(false);
-  const [events, setEvents] = useState<TranslatedEvent[]>([]);
 
   // Load previously uploaded ABIs from localStorage after mount. Doing this in
   // an effect (rather than during render) keeps the server and client output
@@ -56,30 +45,37 @@ export function DashboardClient(): React.JSX.Element {
     function () {
       return buildCustomBlueprints(customAbis);
     },
-    [customAbis]
+    [customAbis],
   );
 
-  // Derive translations from the raw events + current custom blueprints so the
-  // feed re-translates instantly when an ABI is uploaded or removed.
-  const translatedEvents = useMemo(
     function () {
-      return translateEvents(rawEvents, customBlueprints);
+      const translated = translateEvents(rawEvents, customBlueprints);
+      return [...liveEvents, ...translated];
     },
-    [rawEvents, customBlueprints]
+    [rawEvents, customBlueprints, liveEvents]
   );
 
-  // The live feed delivers already-translated events; prepend the underlying
-  // raw event so the memoised translation pipeline above stays the single
-  // source of truth.
-  const handleNewEvent = useCallback(function (event: TranslatedEvent): void {
-    setRawEvents(function (prev) {
-      return [event.raw, ...prev];
-    });
+  const handleNewEvent = useCallback((event: TranslatedEvent) => {
+
   }, []);
 
-  const { isLive, isPaused, newEventIds, toggleLive, togglePause } = useLiveFeed(handleNewEvent);
+  const { isLive, isPaused, newEventIds, toggleLive, togglePause } =
+    useLiveFeed(handleNewEvent);
 
-  const handleSearch = useCallback(async function (contractId: string): Promise<void> {
+  // Merge live events on top of the translated batch.
+  const events = useMemo(
+    () => [...liveEvents, ...translatedEvents],
+    [liveEvents, translatedEvents],
+  );
+
+  // Clear live events whenever the base dataset changes.
+  useEffect(() => {
+    setLiveEvents([]);
+  }, [rawEvents]);
+
+  const handleSearch = useCallback(async function (
+    contractId: string,
+  ): Promise<void> {
     if (!contractId) {
       setRawEvents(MOCK_RAW_EVENTS);
       setSearchedContract(null);
@@ -91,13 +87,14 @@ export function DashboardClient(): React.JSX.Element {
     setError(null);
 
     try {
-      // Simulate fetching from Stellar network
+      // Simulate fetching from Stellar network.
       await simulateNetworkDelay(800);
-
       setRawEvents(getMockEventsForContract(contractId));
       setSearchedContract(contractId);
     } catch {
-      setError("Failed to fetch events. Please check the Contract ID and try again.");
+      setError(
+        "Failed to fetch events. Please check the Contract ID and try again.",
+      );
     } finally {
       setIsLoading(false);
     }
@@ -112,10 +109,9 @@ export function DashboardClient(): React.JSX.Element {
     setCustomAbis(removeCustomAbi(contractId));
   }, []);
 
-  // Combine initial translated events and live events
-  const allEvents = useMemo(() => {
-    return [...events, ...translatedEvents];
-  }, [events, translatedEvents]);
+  // Combined loading flag — show skeleton while fetching OR while the
+  // worker/chunker is loading translated results into state.
+  const isBusy = isLoading || isTranslating;
 
   return (
     <div className="space-y-6">
@@ -136,7 +132,7 @@ export function DashboardClient(): React.JSX.Element {
       )}
 
       {/* Active filter indicator */}
-      {searchedContract && !isLoading && (
+      {searchedContract && !isBusy && (
         <div className="flex items-center gap-2 text-sm text-muted-foreground">
           <span>Showing events for:</span>
           <code className="font-mono text-xs bg-muted px-2 py-1 rounded">
@@ -155,7 +151,10 @@ export function DashboardClient(): React.JSX.Element {
       )}
 
       {/* Custom ABI controls */}
-      <section aria-label="Custom ABIs" className="flex flex-wrap items-center gap-2">
+      <section
+        aria-label="Custom ABIs"
+        className="flex flex-wrap items-center gap-2"
+      >
         <Button
           variant="outline"
           size="sm"
@@ -191,8 +190,8 @@ export function DashboardClient(): React.JSX.Element {
         })}
       </section>
 
-      {/* Analytics summary */}
-      {!isLoading && <AnalyticsSummaryCards events={events} />}
+      {/* Stats */}
+      {!isBusy && <StatsBar events={events} />}
 
       {/* Feed */}
       <section aria-label="Event feed">
@@ -201,6 +200,21 @@ export function DashboardClient(): React.JSX.Element {
             Event Feed
           </h2>
           <div className="flex items-center gap-2">
+            {/* Export Data button — placed at the header boundary of the event stream */}
+            <Button
+              id="export-data-button"
+              variant="outline"
+              size="sm"
+              className="h-7 px-3 text-xs border-violet-300 text-violet-700 hover:bg-violet-50 dark:border-violet-700 dark:text-violet-400 dark:hover:bg-violet-950"
+              onClick={function () {
+                setIsExportOpen(true);
+              }}
+              disabled={isLoading || events.length === 0}
+              aria-label="Export filtered event data"
+            >
+              <Download className="h-3.5 w-3.5 mr-1.5" />
+              Export Data
+            </Button>
             {isLive && (
               <Button
                 variant="ghost"
@@ -225,18 +239,28 @@ export function DashboardClient(): React.JSX.Element {
             <Button
               variant={isLive ? "destructive" : "outline"}
               size="sm"
-              className={`h-7 px-3 text-xs ${!isLive ? "border-violet-300 text-violet-700 hover:bg-violet-50 dark:border-violet-700 dark:text-violet-400 dark:hover:bg-violet-950" : ""}`}
+              className={`h-7 px-3 text-xs ${
+                !isLive
+                  ? "border-violet-300 text-violet-700 hover:bg-violet-50 dark:border-violet-700 dark:text-violet-400 dark:hover:bg-violet-950"
+                  : ""
+              }`}
               onClick={toggleLive}
             >
-              <Radio className={`h-3.5 w-3.5 mr-1.5 ${isLive ? "animate-pulse" : ""}`} />
+              <Radio
+                className={`h-3.5 w-3.5 mr-1.5 ${isLive ? "animate-pulse" : ""}`}
+              />
               {isLive ? "Stop Live" : "Live Feed"}
             </Button>
             <span className="text-xs text-muted-foreground">
-              {isLoading ? "Loading..." : `${allEvents.length} events`}
+              {isBusy ? "Loading..." : `${events.length} events`}
             </span>
           </div>
         </div>
-        <EventFeedTable events={allEvents} isLoading={isLoading} newEventIds={newEventIds} />
+        <EventFeedTable
+          events={events}
+          isLoading={isBusy}
+          newEventIds={newEventIds}
+        />
       </section>
 
       {/* Contributor CTA */}
@@ -250,8 +274,8 @@ export function DashboardClient(): React.JSX.Element {
             <div>
               <p className="text-sm font-medium">Help translate more contracts</p>
               <p className="text-sm text-muted-foreground mt-0.5">
-                Open-Audit is community-powered. Add a translation blueprint and earn Stellar Drips
-                rewards.
+                Open-Audit is community-powered. Add a translation blueprint and
+                earn Stellar Drips rewards.
               </p>
             </div>
           </div>
@@ -272,6 +296,13 @@ export function DashboardClient(): React.JSX.Element {
         open={isUploadOpen}
         onOpenChange={setIsUploadOpen}
         onUpload={handleAbiUpload}
+      />
+
+      {/* Export Data dialog */}
+      <ExportDataDialog
+        open={isExportOpen}
+        onOpenChange={setIsExportOpen}
+        events={events}
       />
     </div>
   );
