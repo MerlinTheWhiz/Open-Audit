@@ -11,6 +11,7 @@
     "format": "prettier --write .",
     "test": "vitest run",
     "test:watch": "vitest",
+    "validate:registry": "ts-node scripts/validate-registry.ts"
     "validate:registry": "node scripts/validate-registry.js"
   },
   "dependencies": {

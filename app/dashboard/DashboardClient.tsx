@@ -1,5 +1,17 @@
 "use client";
 
+import { useState, useCallback, useMemo, useEffect } from "react";
+import {
+  BookOpen,
+  ArrowRight,
+  Radio,
+  PauseCircle,
+  PlayCircle,
+  Upload,
+  FileJson,
+  Trash2,
+} from "lucide-react";
+import { SearchBar } from "@/components/dashboard/SearchBar";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   AlertCircle,
@@ -26,6 +38,9 @@ import {
   removeCustomAbi,
   saveCustomAbi,
 } from "@/lib/translator/custom-abi";
+import { MOCK_RAW_EVENTS } from "@/lib/mock-data";
+import { useLiveFeed } from "@/lib/hooks/useLiveFeed";
+import type { TranslatedEvent, RawEvent, CustomAbi } from "@/lib/translator/types";
 import { translateEvents } from "@/lib/translator/registry";
 import type { CustomAbi, RawEvent, TranslatedEvent } from "@/lib/translator/types";
 
@@ -41,6 +56,8 @@ function simulateNetworkDelay(ms: number): Promise<void> {
 export function DashboardClient(): React.JSX.Element {
   const [rawEvents, setRawEvents] = useState<RawEvent[]>(MOCK_RAW_EVENTS);
   const [customAbis, setCustomAbis] = useState<CustomAbi[]>([]);
+  const [contractFilter, setContractFilter] = useState<string | null>(null);
+  const [eventTopicFilter, setEventTopicFilter] = useState("");
   const [isLoading, setIsLoading] = useState(false);
   const [searchValue, setSearchValue] = useState("");
   const [searchedContract, setSearchedContract] = useState<string | null>(null);
@@ -68,6 +85,27 @@ export function DashboardClient(): React.JSX.Element {
     [rawEvents, customBlueprints, liveEvents]
   );
 
+  const filteredEvents = useMemo(
+    function () {
+      return events.filter(function (e) {
+        if (contractFilter && e.raw.contractId !== contractFilter) {
+          return false;
+        }
+        if (eventTopicFilter.trim()) {
+          const filter = eventTopicFilter.trim().toLowerCase();
+          if (!e.eventType?.toLowerCase().includes(filter)) {
+            return false;
+          }
+        }
+        return true;
+      });
+    },
+    [events, contractFilter, eventTopicFilter]
+  );
+
+  const handleNewEvent = useCallback((event: TranslatedEvent) => {
+    setRawEvents((prev) => [event.raw, ...prev]);
+  }, []);
   const handleNewEvent = useCallback(
     function (event: TranslatedEvent): void {
       if (searchedContract && event.raw.contractId !== searchedContract) {
@@ -103,6 +141,8 @@ export function DashboardClient(): React.JSX.Element {
     [currentPage, events, pageSize]
   );
 
+  const handleContractFilter = useCallback(function (contractId: string): void {
+    setContractFilter(contractId || null);
   const handleSearch = useCallback(async function (contractId: string): Promise<void> {
     const trimmed = contractId.trim();
     setCurrentPage(1);
@@ -149,6 +189,39 @@ export function DashboardClient(): React.JSX.Element {
 
   return (
     <div className="space-y-6">
+      {/* Filters */}
+      <section aria-label="Event filters">
+        <SearchBar
+          onSearch={handleContractFilter}
+          topicFilter={eventTopicFilter}
+          onTopicFilterChange={setEventTopicFilter}
+        />
+      </section>
+
+      {/* Active filter indicator */}
+      {(contractFilter || eventTopicFilter) && (
+        <div className="flex items-center gap-2 text-sm text-muted-foreground flex-wrap">
+          {contractFilter && (
+            <>
+              <span>Contract:</span>
+              <code className="font-mono text-xs bg-muted px-2 py-1 rounded">
+                {contractFilter.slice(0, 10)}...{contractFilter.slice(-6)}
+              </code>
+            </>
+          )}
+          {eventTopicFilter && (
+            <>
+              <span>Event:</span>
+              <code className="font-mono text-xs bg-muted px-2 py-1 rounded">
+                {eventTopicFilter}
+              </code>
+            </>
+          )}
+          <button
+            type="button"
+            onClick={function () {
+              handleContractFilter("");
+              setEventTopicFilter("");
       <section aria-label="Contract search">
         <SearchBar
           onSearch={handleSearch}
@@ -182,7 +255,7 @@ export function DashboardClient(): React.JSX.Element {
             }}
             className="text-xs text-violet-600 hover:underline dark:text-violet-400"
           >
-            Clear filter
+            Clear all filters
           </button>
         </div>
       )}
@@ -223,6 +296,8 @@ export function DashboardClient(): React.JSX.Element {
         })}
       </section>
 
+      {/* Stats */}
+      <StatsBar events={events} />
       {!isLoading && <StatsBar events={events} />}
 
       <section aria-label="Event feed">
@@ -281,6 +356,11 @@ export function DashboardClient(): React.JSX.Element {
               {isLive ? "Stop Live" : "Live Feed"}
             </Button>
             <span className="text-xs text-muted-foreground">
+              {`${filteredEvents.length} event${filteredEvents.length !== 1 ? "s" : ""}`}
+            </span>
+          </div>
+        </div>
+        <EventFeedTable events={filteredEvents} newEventIds={newEventIds} />
               {isBusy ? "Loading..." : `${events.length} events`}
             </span>
           </div>
