@@ -6,6 +6,9 @@
  * TranslationBlueprint — the contract-specific translation logic.
  */
 
+/** Supported languages. */
+export type Language = "en" | "es" | "fr" | "zh";
+
 /** A raw Soroban contract event as fetched from Horizon/RPC. */
 export interface RawEvent {
   /** Unique event identifier (ledger sequence + index). */
@@ -66,7 +69,7 @@ export interface TranslationBlueprint {
    * Attempts to translate a raw event into a human-readable string.
    * Returns null if this blueprint cannot handle the given event.
    */
-  translate: (event: RawEvent) => TranslationResult | null;
+  translate: (event: RawEvent, lang: Language) => TranslationResult | null;
 }
 
 /** A single topic condition within a multi-topic match. */
@@ -134,11 +137,12 @@ export interface CustomAbiField {
   type: string;
 }
 
-/** Decoded XDR address (simplified representation). */
+/** Decoded XDR address. The publicKey is a canonical Stellar address string
+ *  starting with G (account) or C (contract). */
 export interface DecodedAddress {
-  /** The full Stellar public key (G... address). */
+  /** The full canonical Stellar address (G... or C...). */
   publicKey: string;
-  /** A shortened display version, e.g. "GABC...1234". */
+  /** A shortened display version, e.g. "GABC...1234" or "CDLZ...YSC". */
   short: string;
 }
 
